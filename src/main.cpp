@@ -81,6 +81,24 @@ void init_sd_card() {
     Serial.printf("SD Card Size: %lluMB\n", cardSize);
 }
 
+void config_camera_settings(sensor_t * s) {
+    // Sharp focus settings
+    s->set_brightness(s, 0);     // Neutral brightness
+    s->set_contrast(s, 2);       // Slightly increased contrast
+    s->set_saturation(s, 0);     // Neutral saturation
+    
+    // Auto white balance and exposure
+    s->set_whitebal(s, 1);       // Enable white balance
+    s->set_awb_gain(s, 1);       // Enable auto white balance gain
+    s->set_exposure_ctrl(s, 1);  // Enable exposure control
+    s->set_aec2(s, 1);           // Advanced exposure control
+    s->set_ae_level(s, 0);       // Neutral exposure level
+    
+    // Sharpness and noise reduction
+    s->set_sharpness(s, 2);      // Moderate sharpness increase
+    s->set_denoise(s, 1);        // Light noise reduction
+}
+
 void save_to_sd_card(camera_fb_t * fb) {
   // initialize EEPROM with predefined size
   EEPROM.begin(EEPROM_SIZE);
@@ -134,11 +152,11 @@ void setup() {
 
     if (psramFound()){
       config.frame_size = FRAMESIZE_UXGA; // FRAMESIZE_ + QVGA|CIF|VGA|SVGA|XGA|SXGA|UXGA
-      config.jpeg_quality = 10;
+      config.jpeg_quality = 5;
       config.fb_count = 2;
     } else {
       config.frame_size = FRAMESIZE_SVGA;
-      config.jpeg_quality = 12;
+      config.jpeg_quality = 8;
       config.fb_count = 1;
     }
 
@@ -152,17 +170,19 @@ void setup() {
     // If we want to use SD card
     init_sd_card();
 
+    // Configure camera settings
+    config_camera_settings(esp_camera_sensor_get());
+
     // Configure GPIO 4 for flashlight control
-    pinMode(FLASH_LIGHT_PIN, OUTPUT);
+    // pinMode(FLASH_LIGHT_PIN, OUTPUT);
     pinMode(LED_PIN, OUTPUT);
-    Serial.print("ASDASDASD");
 }
 
 void loop() {
   digitalWrite(LED_PIN, HIGH);
   // Turn on the flashlight
-  digitalWrite(4, HIGH);
-  Serial.println("Flashlight ON");
+  // digitalWrite(4, HIGH);
+  // Serial.println("Flashlight ON");
 
   // Take Picture with Camera
   camera_fb_t * fb = esp_camera_fb_get();
@@ -180,10 +200,11 @@ void loop() {
   // Release the frame buffer
   esp_camera_fb_return(fb);
 
-  delay(2000); // Keep it on for 2 seconds
+  // delay(2000); // Keep it on for 2 seconds
   // Turn off the flashlight
-  digitalWrite(4, LOW);
-  Serial.println("Flashlight OFF");
+  // digitalWrite(4, LOW);
+  // Serial.println("Flashlight OFF");
+
   digitalWrite(LED_PIN, LOW);
-  delay(2000); // Keep it off for 2 seconds
+  delay(5000); // Keep it off for 5 seconds
 }
