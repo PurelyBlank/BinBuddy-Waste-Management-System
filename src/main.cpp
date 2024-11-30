@@ -8,6 +8,8 @@
 #include "driver/rtc_io.h"
 #include <EEPROM.h>            // read and write from flash memory
 #include <WiFi.h>
+#include <WiFiClientSecure.h>
+#include <HTTPClient.h>
 
 // Pin definition for CAMERA_MODEL_AI_THINKER 
 #define PWDN_GPIO_NUM     32
@@ -34,8 +36,15 @@
 #define ESP_32_CAM_IP_ADDR "192.168.4.1"
 #define EEPROM_SIZE 1 // For SD card size
 
-const char* apSSID = "ESP32_CAM";       // Name of the WiFi network
-const char* apPassword = "camera123";   // Password to connect
+const char * apSSID = "ESP32_CAM";       // Name of the WiFi network
+const char * apPassword = "camera123";   // Password to connect
+
+const char * SSID = "";
+const char * PASSWORD = "";
+
+// Cloud URL
+const char* serverName = "http://<IP Address>/<PATH>";
+
 IPAddress ipAddr;
 
 int pictureNumber = 0;
@@ -83,7 +92,7 @@ void init_sd_card() {
 
 void config_camera_settings(sensor_t * s) {
     // Sharp focus settings
-    s->set_brightness(s, 0);     // Neutral brightness
+    s->set_brightness(s, 1);     // Neutral brightness
     s->set_contrast(s, 2);       // Slightly increased contrast
     s->set_saturation(s, 0);     // Neutral saturation
     
@@ -97,6 +106,23 @@ void config_camera_settings(sensor_t * s) {
     // Sharpness and noise reduction
     s->set_sharpness(s, 2);      // Moderate sharpness increase
     s->set_denoise(s, 1);        // Light noise reduction
+}
+
+void optimize_camera_focus(sensor_t *s) {
+    // Maximize sharpness parameters
+    s->set_sharpness(s, 3);      // Highest sharpness
+    s->set_contrast(s, 2);       // Increased contrast
+    
+    // Exposure optimization
+    s->set_exposure_ctrl(s, 1);  // Enable advanced exposure
+    s->set_aec2(s, 1);           // Advanced exposure control
+    s->set_ae_level(s, 0);       // Neutral exposure
+    s->set_aec_value(s, 800);    // Adjusted exposure value
+    
+    // White balance
+    s->set_whitebal(s, 1);       // Enable white balance
+    s->set_awb_gain(s, 1);       // Auto white balance gain
+    s->set_wb_mode(s, 0);        // Auto white balance mode
 }
 
 void save_to_sd_card(camera_fb_t * fb) {
@@ -121,6 +147,118 @@ void save_to_sd_card(camera_fb_t * fb) {
     EEPROM.commit();
   }
   file.close(); 
+}
+
+void connect_to_wifi() {
+  WiFi.begin(SSID, PASSWORD);
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(1000);
+    Serial.println("Connecting to WiFi...");
+  }
+  Serial.println("Connected to WiFi!");
+}
+
+String upload_to_cloud(camera_fb_t *fb) {
+    if (WiFi.status() != WL_CONNECTED) {
+        Serial.println("WiFi not connected");
+        return "";
+    }
+
+    // Create WiFiClient and HTTPClient
+    WiFiClient client;
+    HTTPClient http;
+    http.begin(client, serverName);
+
+    // Prepare multipart form data manually
+    String boundary = "----WebKitFormBoundary7MA4YWxkTrZu0gW";
+    
+    // Construct the full multipart payload
+    String startPart = "--" + boundary + "\r\n";
+    startPart += "Content-Disposition: form-data; name=\"file\"; filename=\"capture.jpg\"\r\n";
+    startPart += "Content-Type: image/jpeg\r\n\r\n";
+    String endPart = "\r\n--" + boundary + "--\r\n";
+
+    // Calculate total content length
+    size_t contentLength = startPart.length() + fb->len + endPart.length();
+
+    // Set headers explicitly
+    http.addHeader("Content-Type", "multipart/form-data; boundary=" + boundary);
+    http.addHeader("Content-Length", String(contentLength));
+
+    // Debugging info
+    Serial.println("Payload start length: " + String(startPart.length()));
+    Serial.println("Image length: " + String(fb->len));
+    Serial.println("Payload end length: " + String(endPart.length()));
+    Serial.println("Total content length: " + String(contentLength));
+
+    // Allocate buffer for full payload
+    uint8_t* fullPayload = (uint8_t*)malloc(contentLength);
+    if (!fullPayload) {
+        Serial.println("Memory allocation failed");
+        return "";
+    }
+
+    // Copy parts into buffer
+    size_t offset = 0;
+    memcpy(fullPayload + offset, startPart.c_str(), startPart.length());
+    offset += startPart.length();
+    
+    memcpy(fullPayload + offset, fb->buf, fb->len);
+    offset += fb->len;
+    
+    memcpy(fullPayload + offset, endPart.c_str(), endPart.length());
+
+    // Send POST request
+    int httpResponseCode = http.POST(fullPayload, contentLength);
+
+    // Free allocated memory
+    free(fullPayload);
+
+    // Handle response
+    if (httpResponseCode > 0) {
+        String response = http.getString();
+        Serial.printf("HTTP Response code: %d\n", httpResponseCode);
+        Serial.println("Server Response: ");
+        Serial.println(response);
+        http.end();
+        return response;
+    } else {
+        Serial.printf("HTTP POST failed, error: %s\n", http.errorToString(httpResponseCode).c_str());
+        http.end();
+        return "";
+    }
+}
+
+// UNFINISHED, turn motor based on response
+void turn_motor(String response) {
+  if (response == "YES") {
+    Serial.println("RECYCLABLE");
+  } else if ( response == "NO") {
+    Serial.println("NOT RECYCLABLE");
+  } else {
+    Serial.println("Response Error");
+  } 
+}
+
+void classify_image() {
+  // Take Picture with Camera
+  camera_fb_t * fb = esp_camera_fb_get();
+  if (!fb) {
+    Serial.println("Camera capture failed");
+    return;
+  }
+
+  // Save picture to sd card
+  save_to_sd_card(fb);
+
+  // Process the image buffer (fb->buf) here
+  Serial.printf("Captured photo! Size: %d bytes\n", fb->len);
+
+  String response = upload_to_cloud(fb);  // Upload the captured photo 
+  turn_motor(response);
+
+  // Release the frame buffer
+  esp_camera_fb_return(fb);
 }
 
 void setup() {
@@ -170,8 +308,13 @@ void setup() {
     // If we want to use SD card
     init_sd_card();
 
+    sensor_t * sensor = esp_camera_sensor_get();
     // Configure camera settings
-    config_camera_settings(esp_camera_sensor_get());
+    config_camera_settings(sensor);
+    optimize_camera_focus(sensor);
+
+    // Connect to WiFi
+    connect_to_wifi();
 
     // Configure GPIO 4 for flashlight control
     // pinMode(FLASH_LIGHT_PIN, OUTPUT);
@@ -184,21 +327,13 @@ void loop() {
   // digitalWrite(4, HIGH);
   // Serial.println("Flashlight ON");
 
-  // Take Picture with Camera
-  camera_fb_t * fb = esp_camera_fb_get();
-  if (!fb) {
-    Serial.println("Camera capture failed");
-    return;
-  }
-
-  // Save picture to sd card
-  save_to_sd_card(fb);
-
-  // Process the image buffer (fb->buf) here
-  Serial.printf("Captured photo! Size: %d bytes\n", fb->len);
-
-  // Release the frame buffer
-  esp_camera_fb_return(fb);
+  if (Serial.available() > 0) {
+    char command = Serial.read();
+    command = toupper(command);
+    if (command == 'C') { // captures an image
+      classify_image();      
+    }
+  }  
 
   // delay(2000); // Keep it on for 2 seconds
   // Turn off the flashlight
@@ -206,5 +341,5 @@ void loop() {
   // Serial.println("Flashlight OFF");
 
   digitalWrite(LED_PIN, LOW);
-  delay(5000); // Keep it off for 5 seconds
+  delay(1000); // Keep it off for 2 seconds
 }
